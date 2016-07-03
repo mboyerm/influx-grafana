@@ -1,0 +1,180 @@
+Excellent refence:
+http://vmkdaily.ghost.io/influxdb-and-grafana-on-centos/
+https://dbiers.me/setup-grafana-influxdb-collectd-centos-7-x/
+
+
+###############################################################################
+# InfluxDB
+###############################################################################
+
+
+Influxdb Installation Instructions:
+
+https://docs.influxdata.com/influxdb/v0.13/introduction/installation/
+
+
+# 1. Add influxdb repo
+cat <<EOF | sudo tee /etc/yum.repos.d/influxdb.repo
+[influxdb]
+name = InfluxDB Repository - RHEL \$releasever
+baseurl = https://repos.influxdata.com/rhel/\$releasever/\$basearch/stable
+enabled = 1
+gpgcheck = 1
+gpgkey = https://repos.influxdata.com/influxdb.key
+EOF
+
+# 2. Update yum repos and install
+yum install -y influxdb
+
+# 3. Auto-start on power up and start influxdb now
+systemctl enable influxdb
+systemctl start influxdb
+systemctl status -l influxdb
+
+
+firewall-cmd --permanent --zone=public --add-port=8086/tcp
+firewall-cmd --permanent --zone=public --add-port=8083/tcp
+firewall-cmd --reload
+
+
+# 4. Create a new configuration file
+# Default is located: /etc/influxdb/influxdb.conf
+
+cp /etc/influxdb/influxdb.conf /etc/influxdb/influxdb.conf.orig
+
+# Edit configuration file to enable collectd and batching
+[collectd]
+  enabled = true # Set to "true" to enable the plugin.
+  bind-address = "0.0.0.0:8888" # You can choose any interface IP address here (0.0.0.0 listens on all interfaces).  We will use port 8888 for the sake of keeping it (a little) simple.
+  database = "collectd" # Choose a database name that we will be creating in a moment.
+  # typesdb = ""
+
+  # These next lines control how batching works. You should have this enabled
+  # otherwise you could get dropped metrics or poor performance. Batching
+  # will buffer points in memory if you have many coming in.
+
+  batch-size = 1000 # will flush if this many points get buffered
+  batch-pending = 5 # number of batches that may be pending in memory
+  batch-timeout = "1s" # will flush at least this often even if we haven't hit buffer limit
+  read-buffer = 0 # UDP Read buffer size, 0 means OS default. UDP listener will fail if set above OS max.
+
+
+influxd
+influxd config
+
+# 6. Login to influxDB web interface:
+http://<ip address>:8083
+
+# 7. Using influx CLI interface, create user and DBs
+influx
+CREATE USER "admin" WITH PASSWORD 'Alcateldc' WITH ALL PRIVILEGES
+CREATE DATABASE "collectd"
+
+CREATE USER "collectdrw" WITH PASSWORD 'collectdrw'
+GRANT ALL ON "collectd" TO "collectdrw"
+
+CREATE USER "collectdread" WITH PASSWORD 'collectdread'
+GRANT READ ON "collectd" TO "collectdread"
+
+
+
+CREATE USER esx WITH PASSWORD 'esx' WITH ALL PRIVILEGES
+CREATE DATABASE iops
+CREATE DATABASE compute
+exit
+
+
+###############################################################################
+# Grafana
+###############################################################################
+
+
+# 1. Add grafana repo
+cat <<EOF | sudo tee /etc/yum.repos.d/grafana.repo
+[grafana]
+name=grafana
+baseurl=https://packagecloud.io/grafana/stable/el/7/$basearch
+repo_gpgcheck=1
+enabled=1
+gpgcheck=1
+gpgkey=https://packagecloud.io/gpg.key https://grafanarel.s3.amazonaws.com/RPM-GPG-KEY-grafana
+sslverify=1
+sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+EOF
+
+
+yum install -y grafana
+
+# Default config file is at: /etc/grafana/grafana.ini
+
+systemctl enable grafana-server.service
+systemctl daemon-reload
+systemctl start grafana-server
+systemctl status -l grafana-server
+
+
+firewall-cmd --permanent --zone=public --add-port=3000/tcp
+firewall-cmd --reload
+
+# Web interface:
+http://<ip address>:3000
+
+
+# Verification steps
+systemctl list-unit-files | grep 'influx\|grafana'
+
+
+
+
+###############################################################################
+# Collectd
+###############################################################################
+
+# Install epel
+yum install -y epel-release
+yum install -y collectd
+systemctl enable collectd.service
+
+cp /etc/collectd.conf /etc/collectd.conf.orig
+
+LoadPlugin network
+
+<Plugin network>
+#       # client setup:
+#       Server "ff18::efc0:4a42" "25826"
+        <Server "10.0.1.25" "8888">
+                SecurityLevel None
+                Username "collectdrw"
+                Password "collectdrw"
+                Interface "enp0s3"
+#               ResolveInterval 14400
+        </Server>
+#       TimeToLive 128
+#
+#       # server setup:
+#       Listen "ff18::efc0:4a42" "25826"
+#       <Listen "239.192.74.66" "25826">
+#               SecurityLevel Sign
+#               AuthFile "/etc/collectd/passwd"
+#               Interface "eth0"
+#       </Listen>
+#       MaxPacketSize 1452
+#
+#       # proxy setup (client and server as above):
+#       Forward true
+#
+#       # statistics about the network plugin itself
+#       ReportStats false
+#
+#       # "garbage collection"
+#       CacheFlush 1800
+</Plugin>
+
+systemctl restart collectd
+systemctl -l status collectd
+
+
+
+
+
+
